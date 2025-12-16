@@ -379,9 +379,19 @@ def compute_gradient_of_variables(output_tensor, out_grad):
     # Traverse graph in reverse topological order given the output_node that we are taking gradient wrt.
     reverse_topo_order = list(reversed(find_topo_sort([output_tensor])))
 
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    for node in reverse_topo_order:
+        # sum up partial ajoints
+        ajoint = sum_node_list(node_to_output_grads_list[node])
+        node.grad = ajoint
+
+        if node.op is None: continue  # skip leaf nodes
+
+        # compute partial ajoints for input nod
+        partial_ajoints = node.op.gradient_as_tuple(ajoint, node)
+        for input_node, partial_ajoint in zip(node.inputs, partial_ajoints):
+            if input_node not in node_to_output_grads_list:
+                node_to_output_grads_list[input_node] = []
+            node_to_output_grads_list[input_node].append(partial_ajoint)
 
 
 def find_topo_sort(node_list: List[Value]) -> List[Value]:
@@ -392,16 +402,25 @@ def find_topo_sort(node_list: List[Value]) -> List[Value]:
     after all its predecessors are traversed due to post-order DFS, we get a topological
     sort.
     """
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    visited = set()             # 创建visited集合，用于记录已经访问过的节点
+    topo_order = []             # 创建列表存储拓扑排序结果
+
+    for node in node_list:
+        topo_sort_dfs(node, visited, topo_order)
+
+    return topo_order
 
 
 def topo_sort_dfs(node, visited, topo_order):
     """Post-order DFS"""
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    if node in visited: return
+
+    for input_node in node.inputs:
+        # 递归访问所有输入节点
+        topo_sort_dfs(input_node, visited, topo_order)  
+
+    topo_order.append(node)    # 将当前节点添加到拓扑排序结果中
+    visited.add(node)           # 标记当前节点为已访问
 
 
 ##############################
