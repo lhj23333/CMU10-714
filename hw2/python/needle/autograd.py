@@ -75,6 +75,8 @@ class Op:
 class TensorOp(Op):
     """Op class specialized to output tensors, will be alternate subclasses for other structures"""
 
+    ## class EWiseAdd(TensorOp): 
+    # TensorOp 是 Op 算子类的基类，实现算子调用 __call__方法：Tensor.make_from_op(self, args) 创建计算图 tensor 节点
     def __call__(self, *args):
         return Tensor.make_from_op(self, args)
 
@@ -94,15 +96,17 @@ class Value:
     inputs: List["Value"]
     # The following fields are cached fields for
     # dynamic computation
-    cached_data: NDArray
+    cached_data: NDArray    # numpy.ndarray: 多维数组，存储计算结果
     requires_grad: bool
 
+    # realize_cached_data：执行前向计算，并存储计算结果到 cached_data 中
     def realize_cached_data(self):
         """Run compute to realize the cached data"""
         # avoid recomputation
         if self.cached_data is not None:
             return self.cached_data
-        # note: data implicitly calls realized cached data
+        
+        # 计算 node 的所有输入节点对 node 的计算贡献，并存储到 cached_data 中
         self.cached_data = self.op.compute(
             *[x.realize_cached_data() for x in self.inputs]
         )
@@ -115,6 +119,7 @@ class Value:
         global TENSOR_COUNTER
         TENSOR_COUNTER -= 1
 
+    # _init 方法初始化 Value 对象，并传递赋予 Value 对象的属性
     def _init(
         self,
         op: Optional[Op],
@@ -128,11 +133,11 @@ class Value:
         TENSOR_COUNTER += 1
         if requires_grad is None:
             requires_grad = any(x.requires_grad for x in inputs)
-        self.op = op
-        self.inputs = inputs
-        self.num_outputs = num_outputs
-        self.cached_data = cached_data
-        self.requires_grad = requires_grad
+        self.op = op                            # 记录创建 node 所调用的算子实例
+        self.inputs = inputs                    # 记录创建 node 所调用的输入节点列表
+        self.num_outputs = num_outputs          # 初始化 num_outputs
+        self.cached_data = cached_data          # 初始化 cached_data
+        self.requires_grad = requires_grad      # 初始化 requires_grad
 
     @classmethod
     def make_const(cls, data, *, requires_grad=False):
@@ -232,16 +237,19 @@ class Tensor(Value):
         return array_api.array(numpy_array, device=device, dtype=dtype)
 
     @staticmethod
+    ## make_from_op 方法创建并初始化计算图 tensor 节点
     def make_from_op(op: Op, inputs: List["Value"]):
         tensor = Tensor.__new__(Tensor)
         tensor._init(op, inputs)
         if not LAZY_MODE:
             if not tensor.requires_grad:
                 return tensor.detach()
+            # 计算 node 的计算结果，并存储到 cached_data 中
             tensor.realize_cached_data()
         return tensor
 
     @staticmethod
+    ## make_const 方法被 detach 方法调用，创建并初始化计算图 tensor 节点
     def make_const(data, requires_grad=False):
         tensor = Tensor.__new__(Tensor)
         tensor._init(
@@ -255,6 +263,8 @@ class Tensor(Value):
         return tensor
 
     @property
+    ## data：LAZY_MODE 下，执行 node 的计算结果输出，并返回计算结果到 cached_data 中
+    ## 需注意该模式下所计算创建的 node 不会被记录到计算图中
     def data(self):
         return self.detach()
 
@@ -287,6 +297,7 @@ class Tensor(Value):
             return cpu()
         return data.device
 
+    # backward：反向传播入口，计算梯度并存储到 grad 属性中
     def backward(self, out_grad=None):
         out_grad = (
             out_grad
@@ -307,6 +318,9 @@ class Tensor(Value):
             return numpy.array(data)
         return data.numpy()
 
+    ## 运算符重载，使得 Tensor 对象可创建调用算子实例
+    # 例：a + b → 触发 a.__add__(b)
+    #     __add__ 创建并调用 EwiseAdd() 算子实例
     def __add__(self, other):
         if isinstance(other, Tensor):
             return needle.ops.EWiseAdd()(self, other)
@@ -358,9 +372,9 @@ class Tensor(Value):
     def transpose(self, axes=None):
         return needle.ops.Transpose(axes)(self)
 
-
     __radd__ = __add__
     __rmul__ = __mul__
+
 
 
 
@@ -376,12 +390,22 @@ def compute_gradient_of_variables(output_tensor, out_grad):
     # instead of the vector output_node. But this is the common case for loss function.
     node_to_output_grads_list[output_tensor] = [out_grad]
 
-    # Traverse graph in reverse topological order given the output_node that we are taking gradient wrt.
+    # 拓扑排序：从输出节点开始，按照拓扑排序的顺序，计算每个节点的梯度
     reverse_topo_order = list(reversed(find_topo_sort([output_tensor])))
 
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    for node in reverse_topo_order:
+        # 计算 node 所有伴随节点对 node 的梯度贡献，并存储到 node.grad 中
+        ajoint = sum_node_list(node_to_output_grads_list[node])
+        node.grad = ajoint
+
+        if node.op is None: continue  # 跳过叶子节点
+
+        # 计算 node 所有输入节点对 node 的梯度贡献，并存储到 node.inputs 中
+        partial_ajoints = node.op.gradient_as_tuple(ajoint, node)
+        for input_node, partial_ajoint in zip(node.inputs, partial_ajoints):
+            if input_node not in node_to_output_grads_list:
+                node_to_output_grads_list[input_node] = []
+            node_to_output_grads_list[input_node].append(partial_ajoint)
 
 
 def find_topo_sort(node_list: List[Value]) -> List[Value]:
@@ -392,16 +416,25 @@ def find_topo_sort(node_list: List[Value]) -> List[Value]:
     after all its predecessors are traversed due to post-order DFS, we get a topological
     sort.
     """
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    visited = set()         # 创建visited集合，用于记录已经访问过的节点
+    topo_order = []              # 创建topo_order列表，用于存储拓扑排序后的节点列表
+
+    for node in node_list:
+        topo_sort_dfs(node, visited, topo_order)
+
+    return topo_order
 
 
 def topo_sort_dfs(node, visited, topo_order):
     """Post-order DFS"""
-    ### BEGIN YOUR SOLUTION
-    raise NotImplementedError()
-    ### END YOUR SOLUTION
+    if node in visited: return
+
+    for input_node in node.inputs:
+        # 递归访问所有输入节点
+        topo_sort_dfs(input_node, visited, topo_order)  
+
+    topo_order.append(node)     # 将当前节点添加到topo_order列表中
+    visited.add(node)           # 标记当前节点为已访问
 
 
 ##############################
